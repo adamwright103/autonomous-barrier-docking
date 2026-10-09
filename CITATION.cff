@@ -1,0 +1,32 @@
+cff-version: 1.2.0
+message: "If you use this work, please cite it as below."
+title: "Robust Autonomous Docking and Traversal of Robotic Motorway Barriers"
+abstract: >-
+  A mecanum-wheeled mobile robot that autonomously docks with a movable motorway
+  barrier segment and traverses along it, localising against a ChArUco fiducial
+  using Conv-ChArT, a convolutional-transformer pose estimator trained entirely
+  on synthetic data and run off-board over WiFi while state estimation and
+  control remain on the robot.
+type: software
+license: GPL-3.0
+repository-code: "https://github.com/adamwright103/autonomous-barrier-docking"
+keywords:
+  - robotics
+  - ros2
+  - mecanum
+  - visual-servoing
+  - pose-estimation
+  - charuco
+  - fiducial-markers
+  - model-predictive-control
+authors:
+  - given-names: Adam
+    family-names: Wright
+    affiliation: "University of Auckland"
+  - given-names: Kaelin
+    family-names: Graf-Ogilvie
+    affiliation: "University of Auckland"
+  - given-names: Peter
+    family-names: Xu
+    affiliation: "University of Auckland"
+    role: supervisor

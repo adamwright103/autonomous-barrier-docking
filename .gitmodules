@@ -1,0 +1,12 @@
+[submodule "components/conv-chart"]
+	path = components/conv-chart
+	url = https://github.com/KaelinGraf/Conv-ChArT.git
+	branch = main
+[submodule "components/ros-stack"]
+	path = components/ros-stack
+	url = https://github.com/KaelinGraf/Conv-ChArT-Wireless-Inference.git
+	branch = main
+[submodule "components/firmware"]
+	path = components/firmware
+	url = https://github.com/adamwright103/p4p_arduino.git
+	branch = main

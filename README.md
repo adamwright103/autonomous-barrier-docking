@@ -1,6 +1,6 @@
 # Robust Autonomous Docking and Traversal of Robotic Motorway Barriers
 
-**Part IV Research Project — University of Auckland**
+**Project 41 — Part IV Research Project, University of Auckland**
 Adam Wright and Kaelin Graf-Ogilvie, supervised by Professor Peter Xu.
 
 A mecanum-wheeled mobile robot that autonomously docks with a movable motorway
@@ -185,6 +185,24 @@ robot must respect them:
 The serial bridge surfaces all three in `drive/status` and distinguishes a
 deliberate hold (`RUNNING` with a commanded zero) from a stalled controller
 (`STALLED`) — a distinction that is invisible in the firmware telemetry alone.
+
+---
+
+## Not in this repository
+
+The mechanical design and the written report are internal and are deliberately
+not published here:
+
+- CAD models, mechanical drawings, and the docking coupler geometry
+- The project report and the risk assessment
+- Chassis dimensions, battery and power distribution, and the active
+  illumination hardware — these live in the CAD and the report rather than in
+  code
+
+If you need any of it — to reproduce the build, to check a dimension against the
+mecanum mixing constants, or to review the risk assessment — open an issue or
+get in touch with [@adamwright103](https://github.com/adamwright103) and it can
+be sent on request.
 
 ---
 

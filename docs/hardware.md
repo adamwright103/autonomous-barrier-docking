@@ -1,8 +1,8 @@
 # Hardware
 
 The platform the software in this project runs on. Everything below is taken from
-the component repositories; items marked **TODO** are not recorded in code and need
-filling in from the build itself.
+the component repositories. What the code does not record — geometry, power, and
+the mechanical design — is listed at the end and is available on request.
 
 ---
 
@@ -89,19 +89,26 @@ heading of the motion and loses only its magnitude.
 | Detection | All 16 corners detected and identified in a single network pass, across an 8× apparent-scale range |
 | Pose solve | Undistort → RANSAC lattice fit → recovery → `SOLVEPNP_IPPE` |
 | Illumination | Active, with lit/dark differencing in the deployment domain |
-| Physical square size | **TODO** |
-| Mounting on the barrier | **TODO** |
+| Physical square size | recorded in CAD — available on request |
+| Mounting on the barrier | recorded in CAD — available on request |
 
 ---
 
-## To be documented from the build
+## Held outside this repository
 
-- Chassis dimensions and wheel geometry (needed for the mecanum mixing constants
-  and for the MPC model)
-- Battery, power distribution and nominal voltages
-- Barrier segment specification and the docking coupler geometry
+The following are recorded in the project's CAD models and written report, which
+are internal and not published here:
+
+- Chassis dimensions and wheel geometry — needed for the mecanum mixing constants
+  and for the MPC model
+- Battery, power distribution, and nominal voltages
+- Barrier segment specification and docking coupler geometry
 - Active illumination hardware
-- Mechanical drawings / CAD
+- Mechanical drawings and CAD
+- Risk assessment
+
+Available on request: open an issue, or get in touch with
+[@adamwright103](https://github.com/adamwright103).
 
 ---
 

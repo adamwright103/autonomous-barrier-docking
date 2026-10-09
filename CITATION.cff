@@ -10,6 +10,10 @@ abstract: >-
 type: software
 license: GPL-3.0
 repository-code: "https://github.com/adamwright103/autonomous-barrier-docking"
+identifiers:
+  - type: other
+    value: "Project 41"
+    description: "University of Auckland Part IV Research Project number"
 keywords:
   - robotics
   - ros2

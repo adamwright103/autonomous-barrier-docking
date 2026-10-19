@@ -1,12 +1,16 @@
-[submodule "components/conv-chart"]
-	path = components/conv-chart
+[submodule "components/Conv-ChArT"]
+	path = components/Conv-ChArT
 	url = https://github.com/KaelinGraf/Conv-ChArT.git
 	branch = main
-[submodule "components/ros-stack"]
-	path = components/ros-stack
+[submodule "components/Conv-ChArT-Wireless-Inference"]
+	path = components/Conv-ChArT-Wireless-Inference
 	url = https://github.com/KaelinGraf/Conv-ChArT-Wireless-Inference.git
 	branch = main
-[submodule "components/firmware"]
-	path = components/firmware
+[submodule "components/holonomic_mpc_ekf"]
+	path = components/holonomic_mpc_ekf
+	url = https://github.com/KaelinGraf/holonomic_mpc_ekf.git
+	branch = main
+[submodule "components/p4p_arduino"]
+	path = components/p4p_arduino
 	url = https://github.com/adamwright103/p4p_arduino.git
 	branch = main

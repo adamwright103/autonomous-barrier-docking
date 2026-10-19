@@ -1,184 +1,141 @@
 # System architecture
 
-Companion to the overview diagram in the [root README](../README.md). This page is
-the authoritative description of what talks to what, over which transport, carrying
-which message, at which rate.
+Companion to the diagram in the [root README](../README.md): what runs where, what talks to what
+and at which rate, and how the system stops safely. It describes the pinned commits; each
+component's own README has the detail.
 
 ---
 
-## 1. Connection table
+## 1. Machines and nodes
 
-| From | To | Transport | Carries | Rate |
+| Machine | Executable (package) | Repository | Job |
+|---|---|---|---|
+| Raspberry Pi 5 | `camera_node` (`p4p_camera`) | holonomic_mpc_ekf | Arducam OV2311: 640 × 480 mono PNG stream at 15 Hz, full-resolution stills on request |
+| Raspberry Pi 5 | `imu_node` (`p4p_imu`) | holonomic_mpc_ekf | BNO085 on the Pi's I2C bus at 150 Hz |
+| Raspberry Pi 5 | `ekf_node` (`dock_control`) | holonomic_mpc_ekf | Docking EKF, stepped by every IMU sample, corrected by every pose |
+| Raspberry Pi 5 | `mpc_node` (`dock_control`) | holonomic_mpc_ekf | Supervisor and MPC, one tick every 50 ms |
+| Raspberry Pi 5 | `serial_bridge` (`p4p_serial_bridge`) | holonomic_mpc_ekf | Owns the USB serial link to the Mega |
+| Raspberry Pi 5 | `dock_logger` (`dock_control`) | holonomic_mpc_ekf | Records one bag per docking attempt, without the camera stream |
+| GPU laptop | `inference` (`convchart_ros`) | Conv-ChArT-Wireless-Inference | Conv-ChArT on ONNX Runtime: each frame in, one pose out |
+| GPU laptop | `image_relay`, `telemetry` (`convchart_ros`) | Conv-ChArT-Wireless-Inference | One copy of each frame across the Wi-Fi; the live dashboard and its arming controls |
+| Arduino Mega 2560 | firmware | p4p_arduino | Wheel mixing, calibration, watchdog, 50 Hz telemetry |
+
+`p4p_bringup`'s `pi.launch.py` starts the Pi's nodes in order: the camera and the IMU, then the
+serial bridge once `imu/data` streams, then the EKF, the MPC, the static transforms and the logger
+once `drive/status` shows the Mega streaming. With `rt:=true`, the default, the camera, the EKF and
+the MPC each run on their own core at `SCHED_FIFO` priority 50, and everything else shares core 0.
+On the laptop, `convchart.launch.py task:=infer` starts the inference node with the dashboard, and
+the image relay whenever more than one node reads the camera.
+
+---
+
+## 2. Topics and services
+
+| Interface | Type | From | To | Rate |
 |---|---|---|---|---|
-| camera | Conv-ChArT inference | WiFi | images | 10 Hz |
-| Conv-ChArT inference | EKF | WiFi | pose | 10 Hz |
-| EKF | MPC | wired (same host) | state | — |
-| MPC | serial bridge | wired (same host) | velocity | — |
-| serial bridge | firmware | wired (USB serial) | commands | — |
-| firmware | serial bridge | wired (USB serial) | telemetry | 50 Hz |
-| serial bridge | EKF | wired (same host) | telemetry | 50 Hz |
-| firmware | mecanum base | wired | PWM | — |
-| mecanum base | camera | physical motion | robot motion | continuous |
+| `image` | `sensor_msgs/CompressedImage` | camera | inference, dashboard (through the relay) | 15 Hz, Wi-Fi |
+| `camera_info` | `sensor_msgs/CameraInfo` | camera | | 15 Hz |
+| `image_full_res` (service) | `convchart_interfaces/GetFullResImage` | camera | calibration GUI | on request |
+| `inference_result` | `convchart_interfaces/RosInferenceResult` | inference | EKF, dashboard | 15 Hz, Wi-Fi |
+| `imu/data` | `sensor_msgs/Imu` | IMU | EKF | 150 Hz |
+| `dock/estimate` | `dock_msgs/DockEstimate` | EKF | MPC, dashboard | every IMU sample |
+| `fiducial/fix` | `dock_msgs/FiducialFix` | EKF | MPC, dashboard | every pose |
+| `cmd_vel` | `geometry_msgs/Twist` | MPC | serial bridge, EKF, dashboard | 20 Hz |
+| `dock/stage` | `dock_msgs/DockStage` | MPC | EKF, dashboard, logger | 20 Hz |
+| `dock/mpc_info` | `dock_msgs/MpcInfo` | MPC | dashboard | 20 Hz |
+| `drive/status` | `convchart_interfaces/DriveStatus` | serial bridge | MPC, dashboard | periodic and on every change |
+| `drive/telemetry` | `convchart_interfaces/DriveTelemetry` | serial bridge | logger | 50 Hz |
+| `serial_bridge/arm` (service) | `std_srvs/SetBool` | serial bridge | dashboard, operator | |
+| `dock/arm` (service) | `std_srvs/SetBool` | MPC | dashboard, operator | |
+| TF `target` → `base_link` | | EKF | | 20 Hz |
 
-"Wired (same host)" means intra-host ROS 2 DDS on the Pi. "WiFi" means DDS across
-the LAN between the Pi and the laptop, with `ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET`
-and `network_mode: host` on the Pi container so discovery sees the real interface.
-
-The last row is not a cable. It is the physical feedback path that makes the system
-a closed loop: the base moves, the camera moves with it, the next image differs,
-the next pose differs. Every other edge is an implementation detail; this one is
-the plant.
+`cmd_vel` is the system's single control input. The EKF also reads it to tell when the robot is
+meant to be still, and holds the velocity at zero then. It reads `dock/stage` to start
+estimating when docking is armed (with 2 s of IMU zeroing, so keep the robot still) and to idle when
+it is disarmed.
 
 ---
 
-## 2. ROS interface contract
+## 3. The perception link
 
-This is the contract the planned control nodes must meet. Every message type below
-already exists in `convchart_interfaces`.
+- **Frames.** 640 × 480 mono8 PNG at 15 Hz, about 110 kB a frame. The OV2311's 1600 × 1200 window
+  is downscaled by exactly 2.5 on the Pi, which is also the detector's input size. PNG, never
+  JPEG: the refiner reads sub-pixel offsets, which compression artefacts would bias.
+- **Timing.** Each frame is stamped when the Pi reads it, and the pose comes back with that stamp.
+  The EKF rolls back to that time, applies the pose there and replays the steps since, so a late
+  pose leaves the state an on-time one would have. Over the trials the delay from stamp to pose
+  had a median of 120 ms over the university Wi-Fi, with spikes to 1.87 s.
+- **Noise.** The inference node attaches a measured, range-dependent covariance to each pose
+  rather than the pipeline's own analytic one, and flags it invalid outside the range it was
+  fitted over. The EKF carries it through the camera mounting into the filter, with the heading's
+  standard deviation floored at 1°.
+- **Ambiguity.** A planar board seen nearly head-on fits two poses almost equally well. The
+  pipeline flags this (`ambiguous`, with the second solution in `pose_alt`), and the EKF fuses
+  whichever is closer to its estimate. A gate on the normalised innovation rejects gross errors.
+- **QoS and DDS.** The image and pose profiles, the two that cross the Wi-Fi, are defined once in
+  `convchart_qos`, so the two ends cannot disagree. Both machines run CycloneDDS on the same
+  `ROS_DOMAIN_ID` (42 by default) with the profiles in Conv-ChArT-Wireless-Inference's
+  `docker/ros/`: `cyclonedds.xml` (multicast discovery, unicast data) or `cyclonedds_peers.xml`
+  (unicast only, for networks that block multicast).
 
-### Published by `p4p_camera/camera_node` (Pi)
+---
 
-| Interface | Kind | Type | Notes |
-|---|---|---|---|
-| `image` | topic | `sensor_msgs/CompressedImage` | 640×480 mono8, PNG-encoded, 10 Hz. Format string `mono8; png compressed mono8`. The pose pipeline's own downscale is the identity at this size. |
-| `camera_info` | topic | `sensor_msgs/CameraInfo` | Intrinsics, loaded from `camera_info_url`. |
-| `image_full_res` | **service** | `convchart_interfaces/GetFullResImage` | One 1600×1200 mono PNG on demand. Encoding costs a quarter of the 10 Hz budget, so it is never on the stream path — calibration and single-shot diagnostics only. The request carries `max_age` so a client cannot silently calibrate on a stale frame. |
+## 4. Safety interlocks
 
-### Published by `convchart_ros/convchart` (GPU laptop)
+From the outermost layer in:
 
-| Interface | Kind | Type |
-|---|---|---|
-| `inference_result` | topic | `convchart_interfaces/RosInferenceResult` |
+1. **Nothing arms itself.** The launch files arm nothing. The operator arms the drive
+   (`serial_bridge/arm`) and then the docking (`dock/arm`), from the dashboard or by service call.
+2. **Supervisor.** The robot holds once the last accepted pose is 0.5 s old, or after two missed
+   MPC ticks (a solver fallback or a blown 25 ms budget). It aborts after 2 s of holding, once the
+   estimate is more than 100 ms old, if the drive is disarmed or stops responding, or once a
+   position standard deviation exceeds 50 mm. Once docked it stops commanding, so the controller
+   never pushes against the coupler.
+3. **Serial bridge.** It resends the newest `cmd_vel` to the Mega at 50 Hz and sends zeros once
+   that command is older than 100 ms (`cmd_timeout`). `drive/status` tells a stalled controller
+   (`STALLED`) from a deliberate hold (`RUNNING` with a zero command), which the firmware's
+   telemetry alone cannot show.
+4. **Firmware.** The Mega boots disarmed, and arming zeroes any stored velocity, so the robot cannot
+   set off on a stale command. Without a velocity command for 400 ms it stops the wheels and flags
+   `TIMEOUT`. `S` disarms at once, the software e-stop.
 
-`RosInferenceResult` is built for a filter rather than for a viewer, and the EKF is
-expected to use all of it:
+---
 
-| Field | Meaning for the filter |
+## 5. Serial link
+
+USB at 115200 baud, 8N1, line-oriented and full duplex. The firmware README has the full
+specification.
+
+| Pi → Mega | Effect |
 |---|---|
-| `pose` | `geometry_msgs/PoseWithCovariance` — the primary solution |
-| `covariance_valid` | `false` means the covariance is a fallback, not measured. Do not trust it as a measurement weight. |
-| `rms` | Reprojection RMS of the pose solve |
-| `num_used` | How many of the 16 corners survived the lattice gate |
-| `reason` | **Non-empty means the result is invalid.** Check this before anything else. |
-| `ambiguous` | The planar-pose two-fold ambiguity was not resolved; `pose_alt` is the other branch, and the filter should compute surprise against both rather than picking one blind. |
-| `pose_alt`, `covariance_valid_alt`, `rms_alt`, `num_used_alt` | The alternate branch, same semantics |
+| `E` | Arm, zeroing any stored velocity |
+| `S` | Disarm and stop at once |
+| `V,<vx>,<vy>,<wz>` | Body velocity in m/s and rad/s, held until the next `V`, the watchdog or `S` |
 
-### Published by `p4p_serial_bridge/serial_bridge` (Pi)
-
-| Interface | Kind | Type | Notes |
-|---|---|---|---|
-| `drive/telemetry` | topic | `convchart_interfaces/DriveTelemetry` | 50 Hz, one decoded CSV row from the Mega. |
-| `imu/data` | topic | `sensor_msgs/Imu` | Optional, same cadence. |
-| `drive/status` | topic | `convchart_interfaces/DriveStatus` | Bridge-side link and command health. Transient-local durability, so a late-starting node learns the current state immediately instead of waiting a tick. |
-| `~/arm` | **service** | `std_srvs/SetBool` | Arm / disarm. |
-
-### Subscribed by `p4p_serial_bridge/serial_bridge` (Pi)
-
-| Interface | Kind | Type | Notes |
-|---|---|---|---|
-| `cmd_vel` | topic | `geometry_msgs/Twist` | **The MPC's output, and the system's single control input.** |
-
----
-
-## 3. Two things a controller author must get right
-
-**`DriveTelemetry.applied` is not `cmd_vel`.** It is the twist the chassis actually
-acted on, after uniform saturation scaling. It reads zero while disarmed or while
-the firmware watchdog is expired, and it is scaled down when the command exceeded
-what the wheels can deliver (`saturated` set). A predictor must use `applied`, not
-the request — otherwise "why isn't the robot doing what I said" becomes a guessing
-game instead of a subtraction.
-
-**`heading_rad` is continuous and never wraps.** It is unwrapped yaw, deliberately
-not normalised into (−π, π], because the filter takes differences of it. Do not
-normalise it. It is relative rather than absolute: the BNO085's game rotation
-vector uses no magnetometer, so it drifts slowly and has no north.
-
-`mega_t_ms` is `millis()` at the last IMU sample as the Mega sees it — quantised to
-the BNO's 100 Hz report rate, so slightly older than `header.stamp`, and it wraps
-every 49.7 days. Use it to order samples, never as a ROS time.
-
----
-
-## 4. Serial link
-
-115200 baud 8N1 over USB, line-oriented, full duplex — telemetry keeps streaming
-while commands arrive.
-
-**Pi → Mega**
-
-| Command | Effect |
-|---|---|
-| `E` | Arm. Zeroes any stored velocity, so a fresh `V` is always required. |
-| `S` | Disarm and zero immediately — the software e-stop. |
-| `V,<Vx>,<Vy>,<Wz>` | Set body twist, held until the next `V`, the watchdog, or `S`. |
-
-Blank lines and lines starting with `#` are ignored and are not counted as errors,
-so a captured telemetry log can be replayed at the robot without tripping the error
-counter.
-
-**Mega → Pi**, 50 Hz CSV:
+Mega → Pi: lines starting with `#` are status text; every other line is a 50 Hz CSV row:
 
 ```
-t_ms,heading_rad,yaw_rate_dps,vx,vy,wz,flags,resets,bad
+t_ms,heading_rad,yaw_rate_dps,vx,vy,wz,flags,resets,bad,req_vx,req_vy,req_wz,us_lf,us_rf,us_lr,us_rr
 ```
 
-Lines starting with `#` are human-readable status, not data; the Pi-side parser
-skips them. `flags` is a bitfield: `1 ARMED`, `2 TIMEOUT`, `4 SAT`. `flags=1` is
-normal driving, `flags=3` is armed but starved of commands, `flags=0` is disarmed.
-
-The firmware sends `yaw_rate` in deg/s on the wire; the bridge republishes it as
-REP-103 rad/s in `DriveTelemetry`.
-
-**Body frame** — right-handed, and it matches the IMU heading sign: `Vx` forward,
-`Vy` left, `Wz` anticlockwise from above. A positive `Wz` makes `heading_rad`
-increase. Verified by rotation test rather than assumed.
+`vx,vy,wz` is the velocity the firmware is applying (zero while disarmed or timed out, scaled
+down when saturated), `req_*` the last command as received, and `us_*` the pulse written to each
+servo channel. `flags` is a bitfield: `1 ARMED`, `2 TIMEOUT`, `4 SAT`. The heading and gyro columns
+have no sensor behind them on this robot, since the IMU moved to the Pi.
 
 ---
 
-## 5. Link-health states
+## 6. Deployment
 
-`DriveStatus.state` is the one place the distinction below is visible, and a
-supervisor should act on it:
-
-| State | Meaning |
-|---|---|
-| `NO_LINK` (0) | Port not open: missing device, no permission, or an I/O error dropped it. The bridge retries. |
-| `NO_TELEMETRY` (1) | Port open, nothing arriving. Either the Mega is still booting (it resets on DTR when the port opens) or it has gone quiet mid-run. |
-| `DISARMED` (2) | Streaming but not armed. The firmware parses velocity in this state and acts on none of it. |
-| `STALLED` (3) | Armed with no fresh `cmd_vel`; the bridge sends zeros on the controller's behalf to keep the watchdog fed. |
-| `RUNNING` (4) | Armed and acting on a fresh `cmd_vel`. A commanded zero is `RUNNING`, not `STALLED` — the controller is alive and asking the robot to hold still. |
-
-`STALLED` versus a commanded zero is the one failure that the firmware telemetry
-cannot show: both look like `applied = 0` while armed.
-
----
-
-## 6. QoS
-
-`convchart_qos` is the single place both ends of the wireless link agree on QoS —
-image, inference-result, command, telemetry and status profiles live there rather
-than being restated per node. Changing a profile in one node and not the other is
-the classic way to get silent non-delivery across a lossy link, so neither end
-declares its own.
-
----
-
-## 7. Deployment
-
-The Pi side runs in Docker (`compose.yaml` in the ROS stack repo), ROS 2 Jazzy on
-`linux/arm64`:
-
-- `network_mode: host` — DDS discovery with the laptop needs the real LAN interface.
-- `CAP_SYS_NICE` and `rtprio: 99` — `SCHED_FIFO` for the fixed-rate filter loop.
-- The Arduino is passed through as a device, which means **compose will not start
-  the container if the Arduino is absent**. There are two services for this reason:
-  `pi` for the default case and `pi-camera` (profile `camera`) for the camera
-  bring-up, which also needs `/dev/dma_heap`, the media controller, and
-  `/run/udev` mounted read-only — libcamera enumerates through udev and, without
-  it, reports no cameras at all while saying nothing about udev.
-
-Camera bring-up also needs `camera_auto_detect=0` and `dtoverlay=arducam-pivariety`
-in the host's `config.txt`.
-
-See `docker/README.md` in the ROS stack repository for the full environment.
+- **Pi.** ROS 2 Jazzy in Docker (`linux/arm64`), built from Conv-ChArT-Wireless-Inference's
+  `compose.yaml`: host networking for DDS discovery, `SYS_NICE` and `rtprio 99` for the real-time
+  cores, and the Arduino (`/dev/ttyACM0`) and the I2C bus (`/dev/i2c-1`) passed through. The
+  container will not start without either device. The `pi-camera` service (profile `camera`) adds
+  the camera devices. holonomic_mpc_ekf is mounted at `/controller_ws`, from `../holonomic_mpc_ekf`
+  unless `CONTROLLER_WS` says otherwise.
+- **Pi host.** `camera_auto_detect=0`, `dtoverlay=arducam-pivariety`, `dtparam=i2c_arm=on` and
+  `dtparam=i2c_arm_baudrate=400000` in `config.txt`; `docker/host-setup-pi.sh` installs the service
+  that configures the camera pipeline at boot.
+- **Laptop.** ROS 2 Jazzy and ONNX Runtime on the GPU, with `convchart_interfaces`,
+  `convchart_qos` and `convchart_ros` built, and `dock_msgs` for the dashboard's estimator and
+  controller panels. Both machines must build the same interface definitions.

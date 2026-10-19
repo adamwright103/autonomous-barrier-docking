@@ -117,17 +117,17 @@ stop, `V,vx,vy,wz` to drive) with telemetry at 50 Hz.
 ## How the pieces fit together
 
 ```mermaid
-flowchart LR
-    subgraph LAPTOP["GPU laptop: Conv-ChArT-Wireless-Inference"]
-        INF["Conv-ChArT inference<br/>convchart_ros"]
-    end
-
+flowchart TB
     subgraph PI["Raspberry Pi 5, ROS 2 Jazzy in Docker: holonomic_mpc_ekf"]
         CAM["p4p_camera<br/>OV2311"]
         IMU["p4p_imu<br/>BNO085"]
         EKF["ekf_node<br/>docking EKF"]
         MPC["mpc_node<br/>supervisor and MPC"]
         SB["p4p_serial_bridge"]
+    end
+
+    subgraph LAPTOP["GPU laptop: Conv-ChArT-Wireless-Inference"]
+        INF["Conv-ChArT inference<br/>convchart_ros"]
     end
 
     subgraph MEGA["Arduino Mega 2560: p4p_arduino"]
